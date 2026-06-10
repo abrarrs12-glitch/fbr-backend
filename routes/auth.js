@@ -1,43 +1,64 @@
 // ============================================================
 //  routes/auth.js
-//  Admin login endpoint. Returns a JWT token on success.
-//  POST /api/auth/login  { email, password }
+//  Login system — Admin aur Client dono ke liye
 // ============================================================
 
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
+const User = require('../models/User');
 
-// Simple single-admin login (stored in .env)
-// For multiple admin users, store them in a database instead
-router.post('/login', (req, res) => {
+// ── Login ─────────────────────────────────────────────────────
+// POST /api/auth/login
+router.post('/login', async (req, res) => {
   const { email, password } = req.body;
 
-  // Check against environment variables
-  if (
-    email    !== process.env.ADMIN_EMAIL ||
-    password !== process.env.ADMIN_PASSWORD
-  ) {
-    return res.status(401).json({ error: 'Invalid email or password' });
+  try {
+    // Pehle database mein user dhundo
+    const user = await User.findOne({ email, isActive: true });
+
+    if (!user) {
+      return res.status(401).json({ error: 'Email ya password galat hai' });
+    }
+
+    // Password check karo
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Email ya password galat hai' });
+    }
+
+    // Token banao
+    const token = jwt.sign(
+      {
+        id:         user._id,
+        email:      user.email,
+        role:       user.role,
+        customerId: user.customerId,
+        name:       user.name,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '8h' }
+    );
+
+    res.json({
+      message: 'Login successful',
+      token,
+      user: {
+        id:         user._id,
+        name:       user.name,
+        email:      user.email,
+        role:       user.role,
+        customerId: user.customerId,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
-
-  // Create a token that expires in 8 hours
-  const token = jwt.sign(
-    { email, role: 'admin' },
-    process.env.JWT_SECRET,
-    { expiresIn: '8h' }
-  );
-
-  res.json({
-    message: 'Login successful',
-    token,
-    expiresIn: '8h',
-  });
 });
 
-// Check if token is still valid
+// ── Verify token ──────────────────────────────────────────────
 router.get('/verify', require('../middleware/auth'), (req, res) => {
-  res.json({ valid: true, admin: req.admin });
+  res.json({ valid: true, user: req.user });
 });
 
 module.exports = router;

@@ -1,26 +1,43 @@
 // ============================================================
 //  middleware/auth.js
-//  Protects routes — only requests with a valid login token
-//  are allowed through. Add this to any route you want to
-//  protect: router.get('/path', authMiddleware, handler)
+//  Token verify karo — role bhi check karo
 // ============================================================
 
 const jwt = require('jsonwebtoken');
 
+// Basic auth — sirf token check
 module.exports = function authMiddleware(req, res, next) {
-  // Token comes in the request header: Authorization: Bearer <token>
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ error: 'No token provided. Please log in.' });
+    return res.status(401).json({ error: 'Login karein pehle' });
   }
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.admin = decoded; // Attach admin info to the request
-    next();              // Continue to the actual route handler
+    req.user = decoded;
+    next();
   } catch (err) {
-    return res.status(403).json({ error: 'Invalid or expired token. Please log in again.' });
+    return res.status(403).json({ error: 'Token expire ho gaya — dobara login karein' });
+  }
+};
+
+// Sirf Admin access
+module.exports.adminOnly = function (req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) return res.status(401).json({ error: 'Login karein pehle' });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+    if (decoded.role !== 'admin') {
+      return res.status(403).json({ error: 'Sirf Admin yeh kar sakta hai' });
+    }
+    next();
+  } catch (err) {
+    return res.status(403).json({ error: 'Token expire ho gaya' });
   }
 };

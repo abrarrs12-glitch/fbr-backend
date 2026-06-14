@@ -1,157 +1,170 @@
 // ============================================================
-//  services/excelParser.js
-//  Reads the FBR-format Excel file and returns an array of
-//  invoice objects ready to be saved to the database.
-//
-//  FBR Excel columns (standard format):
-//  Invoice No | Invoice Date | Buyer Name | Buyer NTN |
-//  Buyer CNIC | Buyer Address | Sale Value | Tax Amount |
-//  Further Tax | Discount | Total Amount | Invoice Type
+//  services/excelParser.js  — UPDATED for FBR JSON format
+//  
+//  Excel Columns → FBR JSON mapping
 // ============================================================
 
 const XLSX = require('xlsx');
 
-// Map Excel column headers to our database field names
-// Update these if FBR changes their column names
-const COLUMN_MAP = {
-  'Invoice No':        'invoiceNumber',
-  'Invoice Number':    'invoiceNumber',
-  'InvoiceNo':         'invoiceNumber',
-  'Invoice Date':      'invoiceDate',
-  'InvoiceDate':       'invoiceDate',
-  'Buyer Name':        'buyerName',
-  'BuyerName':         'buyerName',
-  'Buyer NTN':         'buyerNtn',
-  'BuyerNTN':          'buyerNtn',
-  'Buyer CNIC':        'buyerCnic',
-  'BuyerCNIC':         'buyerCnic',
-  'Buyer Address':     'buyerAddress',
-  'BuyerAddress':      'buyerAddress',
-  'Sale Value':        'saleValue',
-  'SaleValue':         'saleValue',
-  'Taxable Value':     'saleValue',
-  'Tax Amount':        'taxAmount',
-  'TaxAmount':         'taxAmount',
-  'Sales Tax':         'taxAmount',
-  'Further Tax':       'furtherTax',
-  'FurtherTax':        'furtherTax',
-  'Discount':          'discount',
-  'Total Amount':      'totalAmount',
-  'TotalAmount':       'totalAmount',
-  'Invoice Type':      'invoiceType',
-  'InvoiceType':       'invoiceType',
-};
-
 /**
- * parseExcelFile
- * @param {Buffer} fileBuffer - The uploaded Excel file as a buffer
- * @param {string} originalName - Original filename for traceability
+ * Excel se rows read karo aur FBR JSON format mein convert karo
+ * @param {Buffer} fileBuffer
+ * @param {Object} seller - Customer ka data (NTN, name, address etc)
  * @returns {{ invoices: Array, errors: Array, total: number }}
  */
-function parseExcelFile(fileBuffer, originalName = 'upload.xlsx') {
-  const workbook = XLSX.read(fileBuffer, { type: 'buffer', cellDates: true });
-
-  // Use the first sheet (FBR format has one sheet)
+function parseExcelFile(fileBuffer, seller = {}) {
+  const workbook = XLSX.read(fileBuffer, { type: 'buffer', cellDates: false });
   const sheetName = workbook.SheetNames[0];
   const worksheet = workbook.Sheets[sheetName];
 
-  // Convert to array of row objects — header row becomes keys
   const rows = XLSX.utils.sheet_to_json(worksheet, {
-    raw: false,        // Convert dates to strings
-    defval: '',        // Empty cells become ''
+    raw: true,
+    defval: '',
   });
 
   if (rows.length === 0) {
-    throw new Error('Excel file is empty or has no data rows');
+    throw new Error('Excel file mein koi data nahi hai');
   }
 
   const invoices = [];
-  const errors = [];
+  const errors   = [];
 
   rows.forEach((row, index) => {
-    const rowNum = index + 2; // +2 because row 1 is headers
+    const rowNum = index + 2;
+
+    // Empty rows skip karo
+    if (!row['Sale No Reference'] && !row['Name']) return;
+    if (row['Sale No Reference'] === '#N/A') return;
+    if (!row['Name']) return;
+
     try {
-      const invoice = mapRowToInvoice(row, originalName, rowNum);
+      const invoice = mapRowToFbrJson(row, seller, rowNum);
       invoices.push(invoice);
     } catch (err) {
-      errors.push({ row: rowNum, error: err.message, data: row });
+      errors.push({ row: rowNum, error: err.message });
     }
   });
 
-  return { invoices, errors, total: rows.length };
+  return { invoices, errors, total: invoices.length };
 }
 
 /**
- * mapRowToInvoice
- * Converts one Excel row to an invoice object using COLUMN_MAP
+ * Ek Excel row → FBR JSON format
  */
-function mapRowToInvoice(row, sourceFile, rowNum) {
-  const invoice = { sourceFile };
+function mapRowToFbrJson(row, seller, rowNum) {
 
-  // Map each Excel column to our field name
-  for (const [excelCol, dbField] of Object.entries(COLUMN_MAP)) {
-    if (row[excelCol] !== undefined && row[excelCol] !== '') {
-      invoice[dbField] = row[excelCol];
-    }
-  }
+  // ── Validation ─────────────────────────────────────────────
+  if (!row['Sale No Reference']) throw new Error(`Row ${rowNum}: Sale No Reference missing`);
+  if (!row['Name'])              throw new Error(`Row ${rowNum}: Buyer Name missing`);
+  if (!row['Sale Date'])         throw new Error(`Row ${rowNum}: Sale Date missing`);
 
-  // ── Validation ──────────────────────────────────────────
-  if (!invoice.invoiceNumber) {
-    throw new Error(`Row ${rowNum}: Invoice Number is missing`);
-  }
+  // ── Date convert karo ───────────────────────────────────────
+  // Excel date serial number → actual date
+  const invoiceDate = excelDateToString(row['Sale Date']);
 
-  if (!invoice.invoiceDate) {
-    throw new Error(`Row ${rowNum}: Invoice Date is missing`);
-  }
+  // ── HS Code clean karo ─────────────────────────────────────
+  // "2710.1951 - MINERAL FUELS..." → "2710.1951"
+  const hsCodeRaw = String(row['HS Code'] || '');
+  const hsCode    = hsCodeRaw.split(' - ')[0].trim();
 
-  // ── Type conversions ────────────────────────────────────
+  // ── Tax Rate ────────────────────────────────────────────────
+  // 0.18 → "18%"
+  const taxRateNum = parseFloat(row['Tax Rate'] || 0);
+  const taxRate    = taxRateNum ? `${(taxRateNum * 100).toFixed(0)}%` : '0%';
 
-  // Parse date — FBR usually sends DD/MM/YYYY or YYYY-MM-DD
-  invoice.invoiceDate = parseDate(invoice.invoiceDate);
+  // ── FBR JSON Format ────────────────────────────────────────
+  const fbrJson = {
+    // Invoice info
+    invoiceType:    row['Sale Type']   || 'Sale Invoice',
+    invoiceDate:    invoiceDate,
+    invoiceRefNo:   String(row['FBR Invoice Reference No If Debit Note'] || ''),
+    scenarioId:     getScenarioId(row['Trans Type ID']),
 
-  // Convert string numbers to actual numbers
-  const numericFields = ['saleValue', 'taxAmount', 'furtherTax', 'discount', 'totalAmount'];
-  for (const field of numericFields) {
-    if (invoice[field]) {
-      // Remove commas (e.g. "1,50,000" → "150000") then parse
-      invoice[field] = parseFloat(String(invoice[field]).replace(/,/g, '')) || 0;
-    } else {
-      invoice[field] = 0;
-    }
-  }
+    // Seller info — customer ka data
+    sellerNTNCNIC:       seller.ntn        || '',
+    sellerBusinessName:  seller.businessName || '',
+    sellerProvince:      seller.province    || '',
+    sellerAddress:       seller.address     || '',
 
-  // Default invoice type
-  if (!invoice.invoiceType) invoice.invoiceType = 'SI';
+    // Buyer info — Excel se
+    buyerNTNCNIC:            String(row['CNIC/NTNNo'] || ''),
+    buyerBusinessName:       String(row['Name']        || ''),
+    buyerProvince:           String(row['State']       || ''),
+    buyerAddress:            '',
+    buyerRegistrationType:   row['Status'] === 'REGISTERED' ? 'Registered' : 'Un-Registered',
 
-  return invoice;
+    // Invoice number — for our tracking
+    invoiceNumber: String(row['Sale No Reference'] || ''),
+
+    // Items array — ek row = ek item
+    items: [
+      {
+        hsCode:                          hsCode,
+        productDescription:              String(row['Item/Service Name'] || row['Sale Description'] || ''),
+        rate:                            taxRate,
+        uoM:                             String(row['UOM'] || ''),
+        quantity:                        parseFloat(row['Quantity']    || 0),
+        totalValues:                     parseFloat(row['Net Amount']  || 0),
+        valueSalesExcludingST:           parseFloat(row['Sub Amount']  || 0),
+        fixedNotifiedValueOrRetailPrice: parseFloat(row['Sale Price - 3rd Schedule Item'] || 0),
+        salesTaxApplicable:              parseFloat(row['Tax Amount']  || 0),
+        salesTaxWithheldAtSource:        0,
+        extraTax:                        String(row['Advance Income Tax'] || ''),
+        furtherTax:                      row['Further Tax'] === 'NONE' ? 0 : parseFloat(row['Further Tax'] || 0),
+        sroScheduleNo:                   String(row['SRO Schedule No'] || ''),
+        fedPayable:                      0,
+        discount:                        0,
+        saleType:                        String(row['Trans Type'] || ''),
+        sroItemSerialNo:                 String(row['SRO Item No'] || ''),
+      }
+    ],
+
+    // Extra fields for our system
+    totalAmount:  parseFloat(row['Net Amount']  || 0),
+    taxAmount:    parseFloat(row['Tax Amount']  || 0),
+    saleValue:    parseFloat(row['Sub Amount']  || 0),
+    status:       'pending',
+  };
+
+  return fbrJson;
 }
 
 /**
- * parseDate
- * Handles multiple date formats FBR might use
+ * Trans Type ID → FBR Scenario ID
  */
-function parseDate(dateStr) {
-  if (dateStr instanceof Date) return dateStr;
+function getScenarioId(transTypeId) {
+  const map = {
+    '1':  'SN001',  // Standard rated
+    '2':  'SN002',  // Zero rated
+    '3':  'SN003',  // Exempt
+    '23': 'SN023',  // 3rd Schedule Goods
+    '24': 'SN024',  // Fixed rate
+  };
+  return map[String(transTypeId)] || 'SN000';
+}
 
-  const str = String(dateStr).trim();
+/**
+ * Excel serial date → "yyyy-MM-dd" string
+ * Excel stores dates as numbers (e.g. 46184 = 2026-06-11)
+ */
+function excelDateToString(excelDate) {
+  if (!excelDate) return new Date().toISOString().split('T')[0];
 
-  // Try DD/MM/YYYY
-  const ddmmyyyy = str.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (ddmmyyyy) {
-    return new Date(`${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]}`);
+  // Agar already string hai (dd/mm/yyyy format)
+  if (typeof excelDate === 'string' && excelDate.includes('/')) {
+    const parts = excelDate.split('/');
+    return `${parts[2]}-${parts[1].padStart(2,'0')}-${parts[0].padStart(2,'0')}`;
   }
 
-  // Try DD-MM-YYYY
-  const ddmmyyyy2 = str.match(/^(\d{2})-(\d{2})-(\d{4})$/);
-  if (ddmmyyyy2) {
-    return new Date(`${ddmmyyyy2[3]}-${ddmmyyyy2[2]}-${ddmmyyyy2[1]}`);
+  // Excel serial number convert karo
+  const num = parseInt(excelDate);
+  if (!isNaN(num)) {
+    // Excel epoch: January 1, 1900
+    const date = new Date((num - 25569) * 86400 * 1000);
+    return date.toISOString().split('T')[0];
   }
 
-  // Try YYYY-MM-DD (ISO)
-  const parsed = new Date(str);
-  if (!isNaN(parsed.getTime())) return parsed;
-
-  throw new Error(`Cannot parse date: "${str}"`);
+  return new Date().toISOString().split('T')[0];
 }
 
 module.exports = { parseExcelFile };

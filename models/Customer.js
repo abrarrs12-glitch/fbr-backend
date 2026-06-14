@@ -1,31 +1,28 @@
 // ============================================================
-//  models/Customer.js
-//  Each "Customer" is one of your clients (a business you
-//  manage invoices for). Their FBR credentials are stored here.
+//  models/Customer.js — UPDATED with province field
 // ============================================================
 
 const mongoose = require('mongoose');
 
 const CustomerSchema = new mongoose.Schema(
   {
-    // Basic business info
     businessName: { type: String, required: true },
-    ntn:          { type: String, required: true, unique: true }, // National Tax Number
-    strn:         { type: String },                               // Sales Tax Registration No
-    address:      { type: String },
-    contactEmail: { type: String },
-    contactPhone: { type: String },
+    ntn:          { type: String, required: true, unique: true },
+    strn:         { type: String, default: '' },
+    province:     { type: String, default: '' },  // NEW — FBR ke liye
+    address:      { type: String, default: '' },
+    contactEmail: { type: String, default: '' },
+    contactPhone: { type: String, default: '' },
 
-    // FBR credentials — each customer has their own login
     fbrCredentials: {
-      username: { type: String },
-      password: { type: String },  // TODO: encrypt this in production
-      posId:    { type: String },
+      username: { type: String, default: '' },
+      password: { type: String, default: '' },
+      posId:    { type: String, default: '' },
     },
 
     isActive: { type: Boolean, default: true },
   },
-  { timestamps: true } // Automatically adds createdAt and updatedAt
+  { timestamps: true }
 );
 
 module.exports = mongoose.model('Customer', CustomerSchema);

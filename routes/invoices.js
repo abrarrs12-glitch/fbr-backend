@@ -1,158 +1,139 @@
 // ============================================================
-//  routes/invoices.js
-//  - Upload Excel file → parse → save invoices to DB
-//  - List, filter, delete invoices per customer
+//  routes/invoices.js — UPDATED
 // ============================================================
 
-const express = require('express');
-const router = express.Router();
-const multer = require('multer');
-const Invoice = require('../models/Invoice');
+const express  = require('express');
+const router   = express.Router();
+const multer   = require('multer');
+const mongoose = require('mongoose');
+const Invoice  = require('../models/Invoice');
 const Customer = require('../models/Customer');
 const { parseExcelFile } = require('../services/excelParser');
-const auth = require('../middleware/auth');
+const auth     = require('../middleware/auth');
 
-// multer stores the uploaded file in memory (as a Buffer)
-// For large files, use disk storage instead
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB max
+  limits:  { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const allowed = [
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
-      'application/vnd.ms-excel',                                           // .xls
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
     ];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only Excel files (.xlsx, .xls) are allowed'));
-    }
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Sirf Excel files (.xlsx, .xls) allowed hain'));
   },
 });
 
-// ── GET invoices for a customer ───────────────────────────────
-// GET /api/invoices?customerId=xxx&status=pending&page=1
+// ── GET invoices ──────────────────────────────────────────────
 router.get('/', auth, async (req, res) => {
   try {
-    const { customerId, status, page = 1, limit = 50 } = req.query;
+    const { customerId, status, page = 1, limit = 100 } = req.query;
 
     const filter = {};
     if (customerId) filter.customerId = customerId;
-    if (status)     filter.status = status;
+    if (status)     filter.status     = status;
+
+    // Client sirf apna data dekhe
+    if (req.user.role === 'client' && req.user.customerId) {
+      filter.customerId = req.user.customerId;
+    }
 
     const invoices = await Invoice.find(filter)
-      .sort({ createdAt: -1 })          // Newest first
+      .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(Number(limit))
-      .populate('customerId', 'businessName ntn strn'); // Include customer name
+      .populate('customerId', 'businessName ntn strn province');
 
     const total = await Invoice.countDocuments(filter);
 
-    res.json({ invoices, total, page: Number(page), pages: Math.ceil(total / limit) });
+    res.json({ invoices, total, page: Number(page) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── GET summary stats for a customer ─────────────────────────
-// GET /api/invoices/stats/:customerId
+// ── GET stats ─────────────────────────────────────────────────
 router.get('/stats/:customerId', auth, async (req, res) => {
   try {
-    const { customerId } = req.params;
-
     const stats = await Invoice.aggregate([
-      { $match: { customerId: require('mongoose').Types.ObjectId(customerId) } },
-      {
-        $group: {
-          _id: '$status',
-          count: { $sum: 1 },
-          totalAmount: { $sum: '$totalAmount' },
-          totalTax:    { $sum: '$taxAmount' },
-        },
-      },
+      { $match: { customerId: new mongoose.Types.ObjectId(req.params.customerId) } },
+      { $group: { _id: '$status', count: { $sum: 1 }, totalAmount: { $sum: '$totalAmount' } } },
     ]);
 
-    // Convert array to an object keyed by status
     const result = { pending: 0, submitted: 0, accepted: 0, rejected: 0 };
     stats.forEach(s => { result[s._id] = s.count; });
-
     res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── UPLOAD Excel file ─────────────────────────────────────────
-// POST /api/invoices/upload
-// Form data: file (Excel), customerId
+// ── UPLOAD Excel ──────────────────────────────────────────────
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
   try {
     const { customerId } = req.body;
 
-    if (!customerId) {
-      return res.status(400).json({ error: 'customerId is required' });
-    }
-    if (!req.file) {
-      return res.status(400).json({ error: 'No Excel file uploaded' });
-    }
+    if (!customerId) return res.status(400).json({ error: 'customerId zaroori hai' });
+    if (!req.file)   return res.status(400).json({ error: 'Excel file upload karo' });
 
-    // Verify the customer exists
     const customer = await Customer.findById(customerId);
-    if (!customer) {
-      return res.status(404).json({ error: 'Customer not found' });
-    }
+    if (!customer) return res.status(404).json({ error: 'Customer nahi mila' });
 
-    // Parse the Excel file
+    // Excel parse karo — customer ka data seller ke tor pe
     const { invoices, errors, total } = parseExcelFile(
       req.file.buffer,
-      req.file.originalname
+      {
+        ntn:          customer.ntn,
+        businessName: customer.businessName,
+        province:     customer.province || '',
+        address:      customer.address  || '',
+      }
     );
 
     if (invoices.length === 0) {
       return res.status(400).json({
-        error: 'No valid invoices found in the file',
+        error: 'Koi valid invoice nahi mili file mein',
         parseErrors: errors,
       });
     }
 
-    // Add customerId to each invoice and save to DB
-    // insertMany with ordered:false continues even if some duplicates fail
-    const toSave = invoices.map(inv => ({ ...inv, customerId }));
-    const result = await Invoice.insertMany(toSave, { ordered: false }).catch(err => {
-      // Extract successfully inserted docs even when some fail (duplicate invoice numbers)
-      if (err.writeErrors) {
-        return { insertedDocs: err.insertedDocs || [], writeErrors: err.writeErrors };
-      }
-      throw err;
-    });
+    // Database mein save karo
+    const toSave = invoices.map(inv => ({ ...inv, customerId, sourceFile: req.file.originalname }));
 
-    const inserted = Array.isArray(result) ? result.length : (result.insertedDocs?.length || 0);
-    const duplicates = total - inserted - errors.length;
+    let inserted = 0;
+    let duplicates = 0;
+
+    for (const inv of toSave) {
+      try {
+        await Invoice.create(inv);
+        inserted++;
+      } catch (err) {
+        if (err.code === 11000) duplicates++;
+        else errors.push({ error: err.message });
+      }
+    }
 
     res.json({
-      message: `Import complete`,
+      message:     `Import complete`,
       total,
       inserted,
       duplicates,
       parseErrors: errors.length,
-      errors: errors,
+      errors,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ── DELETE an invoice ─────────────────────────────────────────
-// DELETE /api/invoices/:id
+// ── DELETE invoice ────────────────────────────────────────────
 router.delete('/:id', auth, async (req, res) => {
   try {
     const invoice = await Invoice.findById(req.params.id);
-    if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
-    if (invoice.status === 'accepted') {
-      return res.status(400).json({ error: 'Cannot delete an accepted invoice' });
-    }
+    if (!invoice) return res.status(404).json({ error: 'Invoice nahi mili' });
+    if (invoice.status === 'accepted') return res.status(400).json({ error: 'Accepted invoice delete nahi ho sakti' });
     await invoice.deleteOne();
-    res.json({ message: 'Invoice deleted' });
+    res.json({ message: 'Invoice delete ho gayi' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

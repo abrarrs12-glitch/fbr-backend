@@ -139,4 +139,19 @@ router.delete('/:id', auth, async (req, res) => {
   }
 });
 
+// ── GET single invoice ──────────────────────────────────────
+router.get('/:id', auth, async (req, res) => {
+  try {
+    const invoice = await Invoice.findById(req.params.id).populate('customerId', 'businessName ntn strn province address');
+    if (!invoice) return res.status(404).json({ error: 'Invoice nahi mili' });
+    res.json(invoice);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
+
+// ── GET single invoice ────────────────────────────────────────
+// GET /api/invoices/:id
+// Note: Yeh route baaki routes ke BAAD hona chahiye

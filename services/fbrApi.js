@@ -1,45 +1,35 @@
 // ============================================================
-//  services/fbrApi.js — UPDATED with correct FBR JSON format
+//  services/fbrApi.js — UPDATED
+//  Digital Invoicing ke liye sirf SECURITY TOKEN chahiye
+//  POSID/Username/Password ki zaroorat NAHI hai!
 // ============================================================
 
 const axios = require('axios');
 
-const FBR_BASE_URL = process.env.FBR_BASE_URL || 'https://gw.fbr.gov.pk/di_data/v1/di';
-
-let cachedToken  = null;
-let tokenExpiry  = null;
-
-/**
- * FBR se token lo
- */
-async function getFbrToken(credentials = null) {
-  if (cachedToken && tokenExpiry && new Date() < tokenExpiry) {
-    return cachedToken;
-  }
-
-  const username = credentials?.username || process.env.FBR_USERNAME;
-  const password = credentials?.password || process.env.FBR_PASSWORD;
-
-  try {
-    const response = await axios.post(
-      `${FBR_BASE_URL}/login`,
-      { username, password },
-      { headers: { 'Content-Type': 'application/json' } }
-    );
-
-    cachedToken = response.data.token;
-    tokenExpiry = new Date(Date.now() + 55 * 60 * 1000);
-    return cachedToken;
-  } catch (err) {
-    throw new Error(`FBR login failed: ${err.response?.data?.message || err.message}`);
-  }
-}
+// Sandbox testing ke liye:
+const FBR_SANDBOX_URL    = 'https://gw.fbr.gov.pk/di_data/v1/di/postinvoicedata_sb';
+// Production (live) ke liye:
+const FBR_PRODUCTION_URL = 'https://gw.fbr.gov.pk/di_data/v1/di/postinvoicedata';
 
 /**
- * Single invoice FBR ko bhejo — exact JSON format mein
+ * Single invoice FBR ko bhejo — sirf token chahiye!
+ * @param {Object} invoice
+ * @param {Object} customer - customer.fbrToken hona chahiye
+ * @param {Boolean} isSandbox - true = test mode, false = live
  */
-async function submitInvoice(invoice, customer) {
-  const token = await getFbrToken(customer.fbrCredentials);
+async function submitInvoice(invoice, customer, isSandbox = true) {
+  const token = customer.fbrCredentials?.token || process.env.FBR_SECURITY_TOKEN;
+
+  if (!token) {
+    return {
+      success: false,
+      irn: null,
+      error: 'FBR Security Token nahi mila — Customer mein add karo',
+      fbrResponse: null,
+    };
+  }
+
+  const url = isSandbox ? FBR_SANDBOX_URL : FBR_PRODUCTION_URL;
 
   // FBR ka exact JSON format
   const payload = {
@@ -48,39 +38,33 @@ async function submitInvoice(invoice, customer) {
     invoiceRefNo:         invoice.invoiceRefNo     || '',
     scenarioId:           invoice.scenarioId       || 'SN000',
 
-    // Seller — customer ka data
     sellerNTNCNIC:        customer.ntn             || '',
     sellerBusinessName:   customer.businessName    || '',
     sellerProvince:       customer.province        || '',
     sellerAddress:        customer.address         || '',
 
-    // Buyer — invoice se
     buyerNTNCNIC:             invoice.buyerNTNCNIC          || '',
     buyerBusinessName:        invoice.buyerBusinessName     || '',
     buyerProvince:            invoice.buyerProvince         || '',
     buyerAddress:             invoice.buyerAddress          || '',
     buyerRegistrationType:    invoice.buyerRegistrationType || 'Un-Registered',
 
-    // Items
     items: invoice.items || [],
   };
 
   try {
-    const response = await axios.post(
-      `${FBR_BASE_URL}/postinvoicedata`,
-      payload,
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 30000,
-      }
-    );
+    const response = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
 
+    // FBR response mein invoiceNumber hi IRN hota hai
     return {
       success:     true,
-      irn:         response.data?.invoiceNumber || response.data?.IRN || response.data?.irn,
+      irn:         response.data?.invoiceNumber || response.data?.InvoiceNumber,
       fbrResponse: response.data,
     };
   } catch (err) {
@@ -88,7 +72,7 @@ async function submitInvoice(invoice, customer) {
       success:     false,
       irn:         null,
       fbrResponse: err.response?.data || { error: err.message },
-      error:       err.response?.data?.message || err.message,
+      error:       err.response?.data?.message || err.response?.data?.error || err.message,
     };
   }
 }
@@ -96,13 +80,13 @@ async function submitInvoice(invoice, customer) {
 /**
  * Batch submit — sab pending invoices
  */
-async function submitBatch(invoices, customer, onProgress = null) {
+async function submitBatch(invoices, customer, isSandbox = true, onProgress = null) {
   const results = [];
 
   for (let i = 0; i < invoices.length; i++) {
     if (i > 0) await sleep(500);
 
-    const result = await submitInvoice(invoices[i], customer);
+    const result = await submitInvoice(invoices[i], customer, isSandbox);
     results.push({
       invoiceId:     invoices[i]._id,
       invoiceNumber: invoices[i].invoiceNumber,
@@ -117,4 +101,4 @@ async function submitBatch(invoices, customer, onProgress = null) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-module.exports = { getFbrToken, submitInvoice, submitBatch };
+module.exports = { submitInvoice, submitBatch };

@@ -1,5 +1,6 @@
 // ============================================================
-//  models/Customer.js — UPDATED with province field
+//  models/Customer.js — UPDATED
+//  POSID/username/password ki jagah sirf Security Token
 // ============================================================
 
 const mongoose = require('mongoose');
@@ -9,15 +10,14 @@ const CustomerSchema = new mongoose.Schema(
     businessName: { type: String, required: true },
     ntn:          { type: String, required: true, unique: true },
     strn:         { type: String, default: '' },
-    province:     { type: String, default: '' },  // NEW — FBR ke liye
+    province:     { type: String, default: '' },
     address:      { type: String, default: '' },
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
 
+    // FBR Digital Invoicing — sirf token chahiye!
     fbrCredentials: {
-      username: { type: String, default: '' },
-      password: { type: String, default: '' },
-      posId:    { type: String, default: '' },
+      token: { type: String, default: '' },   // Security Token (5 saal valid)
     },
 
     isActive: { type: Boolean, default: true },

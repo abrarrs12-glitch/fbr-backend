@@ -71,7 +71,7 @@ function processRow(row, seller, rowNum, grouped, orderKeys, errors) {
   // Agar nahi diya toh buyer + date se unique banana
   var sourceInvoiceNo = String(row['Source Invoice No'] || '').trim();
   if (!sourceInvoiceNo) {
-    sourceInvoiceNo = String(row['Buyer Business Name']).trim() + '-' + invoiceDate + '-' + rowNum;
+    sourceInvoiceNo = String(row['Buyer Business Name']).trim() + '-' + invoiceDate;
   }
 
   // Grouping key = Source Invoice No
